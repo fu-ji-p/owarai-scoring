@@ -50,7 +50,7 @@ export function initDemoData(): Promise<void> {
         name: names[i],
         avatar_emoji: emojis[i],
         pin_hash: await hashPin(pins[i]),
-        is_admin: i === 0,
+        is_admin: i === 4, // 「こ」が管理者
         created_at: new Date().toISOString(),
       });
     }

@@ -40,9 +40,9 @@ export function initDemoData(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    const pins = ['1234', '5678', '1111', '2222', '3333', '4444'];
-    const names = ['お父さん', 'お母さん', 'みっちゃん', 'たくや', 'あいちゃん', 'じいじ'];
-    const emojis = ['🎤', '😊', '🌟', '😎', '🌸', '👓'];
+    const pins = ['0916', '0105', '0312', '0803', '0417', '0107'];
+    const names = ['ひ', 'か', 'り', 'た', 'こ', 'あ'];
+    const emojis = ['🎸', '🎹', '📯', '🎵', '🚗', '🌸'];
 
     for (let i = 0; i < 6; i++) {
       demoUsers.push({

@@ -1,0 +1,151 @@
+import { useState, useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import type { Competition, Round, Performer, CompetitionStatus } from '../../types/database';
+import { demoDb } from '../../lib/demoData';
+
+export default function ManageCompetition() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [competition, setCompetition] = useState<Competition | null>(null);
+  const [rounds, setRounds] = useState<Round[]>([]);
+  const [performers, setPerformers] = useState<Record<string, Performer[]>>({});
+  const [newPerformerName, setNewPerformerName] = useState('');
+
+  useEffect(() => {
+    if (!id) return;
+    const comp = demoDb.getCompetitionById(id);
+    if (!comp) { navigate('/'); return; }
+    setCompetition(comp);
+    refresh();
+  }, [id, navigate]);
+
+  const refresh = () => {
+    if (!id) return;
+    const rds = demoDb.getRoundsByCompetition(id);
+    setRounds(rds);
+    const perfMap: Record<string, Performer[]> = {};
+    rds.forEach((r) => { perfMap[r.id] = demoDb.getPerformersByRound(r.id); });
+    setPerformers(perfMap);
+  };
+
+  const firstRound = rounds[0];
+  const firstRoundPerformers = firstRound ? (performers[firstRound.id] || []) : [];
+
+  const handleAddPerformer = () => {
+    const name = newPerformerName.trim();
+    if (!name || !id || !firstRound) return;
+    demoDb.createPerformer({
+      competition_id: id,
+      round_id: firstRound.id,
+      name,
+      performance_order: null,
+      display_label: `出場者${String.fromCharCode(65 + firstRoundPerformers.length)}`,
+    });
+    setNewPerformerName('');
+    refresh();
+  };
+
+  const handleDeletePerformer = (perfId: string) => {
+    demoDb.deletePerformer(perfId);
+    refresh();
+  };
+
+  const handleStatusChange = (status: CompetitionStatus) => {
+    if (!id) return;
+    demoDb.updateCompetition(id, { status });
+    setCompetition((prev) => prev ? { ...prev, status } : null);
+  };
+
+  if (!competition) return null;
+
+  const statusLabels: Record<CompetitionStatus, string> = {
+    upcoming: '📅 開催前',
+    active: '🔴 放送中',
+    scoring: '✏️ 採点中',
+    closed: '✅ 終了',
+  };
+
+  return (
+    <div className="min-h-dvh px-4 py-6 max-w-lg mx-auto">
+      <button onClick={() => navigate('/')} className="text-text-secondary hover:text-white mb-4 block">
+        ← ホームに戻る
+      </button>
+
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-xl font-bold mb-2">{competition.name}</h1>
+        <div className="flex gap-2 flex-wrap">
+          {(Object.keys(statusLabels) as CompetitionStatus[]).map((s) => (
+            <button
+              key={s}
+              onClick={() => handleStatusChange(s)}
+              className={`px-3 py-1.5 text-sm rounded-full transition-all ${
+                competition.status === s
+                  ? 'bg-gold text-black font-bold'
+                  : 'bg-bg-card text-text-secondary border border-white/10 hover:border-white/30'
+              }`}
+            >
+              {statusLabels[s]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* === 1st Round: 出場者登録 === */}
+      {firstRound && (
+        <div className="mb-8">
+          <h2 className="text-lg font-bold mb-3 text-gold">{firstRound.name} — 出場者</h2>
+
+          <div className="space-y-2 mb-3">
+            {firstRoundPerformers.map((perf, i) => (
+              <div
+                key={perf.id}
+                className="flex items-center gap-3 p-3 rounded-xl bg-bg-card border border-white/10"
+              >
+                <span className="w-8 text-center text-text-secondary text-sm">{i + 1}</span>
+                <span className="flex-1 font-medium">{perf.name}</span>
+                <button
+                  onClick={() => handleDeletePerformer(perf.id)}
+                  className="text-danger/60 hover:text-danger text-lg px-2"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="芸人名を入力..."
+              value={newPerformerName}
+              onChange={(e) => setNewPerformerName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddPerformer(); }}
+              className="flex-1 px-4 py-3 rounded-xl bg-bg-card border border-white/10 focus:border-gold focus:outline-none text-sm"
+            />
+            <button
+              onClick={handleAddPerformer}
+              className="px-4 py-3 rounded-xl bg-gold text-black font-bold text-sm hover:bg-gold-dark active:scale-95 transition-all"
+            >
+              追加
+            </button>
+          </div>
+
+          <p className="text-xs text-text-secondary mt-2">
+            ※ ネタ順は各ユーザーが放送を見ながら自分で採点した順番になります
+          </p>
+        </div>
+      )}
+
+      {/* === Final Round Info === */}
+      {rounds.length > 1 && (
+        <div className="mb-8 p-4 rounded-xl bg-bg-secondary border border-white/10">
+          <h2 className="text-lg font-bold mb-2 text-gold">{rounds[rounds.length - 1].name}</h2>
+          <p className="text-text-secondary text-sm">
+            最終決戦の出場者は、各ユーザーが1stラウンドの採点を完了した後に自分で選択します。
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

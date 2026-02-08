@@ -1,7 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { demoDb } from '../../lib/demoData';
-import type { ViewingMode } from '../../types/database';
 
 export default function ViewingModeSelect() {
   const { competitionId } = useParams<{ competitionId: string }>();
@@ -12,13 +11,13 @@ export default function ViewingModeSelect() {
 
   if (!competition || !user) return null;
 
-  const handleSelect = (mode: ViewingMode) => {
+  const handleStart = () => {
     if (!competitionId || !user) return;
 
     demoDb.upsertUserCompetitionStatus({
       user_id: user.id,
       competition_id: competitionId,
-      viewing_mode: mode,
+      viewing_mode: 'delayed',
       has_completed_scoring: false,
       completed_at: null,
     });
@@ -32,36 +31,20 @@ export default function ViewingModeSelect() {
         ← 戻る
       </button>
 
-      <div className="text-center mb-10">
-        <h1 className="text-2xl font-bold mb-2">{competition.name}</h1>
-        <p className="text-text-secondary">視聴モードを選んでください</p>
+      <div className="text-center mb-8">
+        <div className="text-5xl mb-4">🎤</div>
+        <h1 className="text-2xl font-bold mb-3">{competition.name}</h1>
+        <p className="text-text-secondary text-sm leading-relaxed">
+          採点する（録画で見ながら採点してもネタバレはしません）
+        </p>
       </div>
 
-      <div className="w-full max-w-sm space-y-4">
+      <div className="w-full max-w-sm">
         <button
-          onClick={() => handleSelect('realtime')}
-          className="w-full p-6 rounded-2xl bg-bg-card border-2 border-white/10 hover:border-gold/50 transition-all active:scale-[0.98] text-left"
+          onClick={handleStart}
+          className="w-full py-5 rounded-2xl bg-gold text-black font-bold text-lg hover:bg-gold-dark active:scale-[0.98] transition-all"
         >
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-3xl">📺</span>
-            <span className="text-lg font-bold">リアルタイムで見ている</span>
-          </div>
-          <p className="text-text-secondary text-sm ml-12">
-            放送を見ながら採点します。ネタ順に表示されます。
-          </p>
-        </button>
-
-        <button
-          onClick={() => handleSelect('delayed')}
-          className="w-full p-6 rounded-2xl bg-bg-card border-2 border-white/10 hover:border-gold/50 transition-all active:scale-[0.98] text-left"
-        >
-          <div className="flex items-center gap-3 mb-2">
-            <span className="text-3xl">📼</span>
-            <span className="text-lg font-bold">あとから録画で見る</span>
-          </div>
-          <p className="text-text-secondary text-sm ml-12">
-            ネタバレ防止モード。ランダム順で表示されます。
-          </p>
+          🎯 採点を始める
         </button>
       </div>
     </div>

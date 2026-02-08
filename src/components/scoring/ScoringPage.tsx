@@ -265,7 +265,7 @@ export default function ScoringPage() {
           ← 戻る
         </button>
         <div className="text-sm text-text-secondary">
-          {isDelayed ? '📼 録画モード' : '📺 リアルタイム'}
+          🎤
         </div>
       </div>
 

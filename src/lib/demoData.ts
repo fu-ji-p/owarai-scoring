@@ -19,6 +19,40 @@ let demoUserCompetitionStatus: UserCompetitionStatus[] = [];
 // Prevent double initialization (StrictMode calls useEffect twice)
 let initPromise: Promise<void> | null = null;
 
+// ===== localStorage persistence =====
+const STORAGE_KEY = 'owarai-scoring-data';
+
+function saveToStorage() {
+  try {
+    const data = {
+      competitions: demoCompetitions,
+      rounds: demoRounds,
+      performers: demoPerformers,
+      scores: demoScores,
+      userCompetitionStatus: demoUserCompetitionStatus,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // localStorage might be full or unavailable
+  }
+}
+
+function loadFromStorage(): boolean {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (data.competitions) demoCompetitions = data.competitions;
+    if (data.rounds) demoRounds = data.rounds;
+    if (data.performers) demoPerformers = data.performers;
+    if (data.scores) demoScores = data.scores;
+    if (data.userCompetitionStatus) demoUserCompetitionStatus = data.userCompetitionStatus;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Event listeners for realtime simulation
 type Listener = (data: unknown) => void;
 const listeners: Record<string, Listener[]> = {};
@@ -33,6 +67,7 @@ export function onDemoChange(table: string, callback: Listener) {
 
 function notify(table: string) {
   listeners[table]?.forEach((cb) => cb(null));
+  saveToStorage();
 }
 
 // ===== Initialize Demo Data =====
@@ -54,6 +89,9 @@ export function initDemoData(): Promise<void> {
         created_at: new Date().toISOString(),
       });
     }
+
+    // Restore saved data from localStorage
+    loadFromStorage();
   })();
 
   return initPromise;

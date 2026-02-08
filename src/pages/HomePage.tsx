@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
-import { demoDb } from '../lib/demoData';
+import { demoDb, onDemoChange } from '../lib/demoData';
 import type { Competition, CompetitionStatus } from '../types/database';
 
 export default function HomePage() {
@@ -20,6 +20,11 @@ export default function HomePage() {
     const handleFocus = () => setRefreshKey((k) => k + 1);
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
+  // Realtime: refresh when data changes from other devices
+  useEffect(() => {
+    return onDemoChange('*', () => setRefreshKey((k) => k + 1));
   }, []);
 
   if (!user) return null;

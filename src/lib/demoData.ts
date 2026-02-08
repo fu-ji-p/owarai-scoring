@@ -7,8 +7,10 @@ import type {
   UserCompetitionStatus,
 } from '../types/database';
 import { hashPin } from './utils';
+import { getSupabase, isSupabaseConfigured } from './supabase';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 
-// ===== Demo Users (6人の家族) =====
+// ===== In-memory cache =====
 let demoUsers: User[] = [];
 let demoCompetitions: Competition[] = [];
 let demoRounds: Round[] = [];
@@ -19,10 +21,11 @@ let demoUserCompetitionStatus: UserCompetitionStatus[] = [];
 // Prevent double initialization (StrictMode calls useEffect twice)
 let initPromise: Promise<void> | null = null;
 
-// ===== localStorage persistence =====
+// ===== localStorage persistence (fallback when no Supabase) =====
 const STORAGE_KEY = 'owarai-scoring-data';
 
 function saveToStorage() {
+  if (isSupabaseConfigured()) return; // Supabase mode doesn't need localStorage
   try {
     const data = {
       competitions: demoCompetitions,
@@ -53,7 +56,7 @@ function loadFromStorage(): boolean {
   }
 }
 
-// Event listeners for realtime simulation
+// ===== Event listeners for change notifications =====
 type Listener = (data: unknown) => void;
 const listeners: Record<string, Listener[]> = {};
 
@@ -67,14 +70,73 @@ export function onDemoChange(table: string, callback: Listener) {
 
 function notify(table: string) {
   listeners[table]?.forEach((cb) => cb(null));
+  // Also notify a global "any" channel
+  listeners['*']?.forEach((cb) => cb(null));
   saveToStorage();
 }
 
-// ===== Initialize Demo Data =====
+// ===== Supabase Helpers =====
+async function supabaseLoadAll(): Promise<void> {
+  const sb = getSupabase();
+  if (!sb) return;
+
+  const [comps, rnds, perfs, scrs, ucs] = await Promise.all([
+    sb.from('competitions').select('*'),
+    sb.from('rounds').select('*'),
+    sb.from('performers').select('*'),
+    sb.from('scores').select('*'),
+    sb.from('user_competition_status').select('*'),
+  ]);
+
+  if (comps.data) demoCompetitions = comps.data;
+  if (rnds.data) demoRounds = rnds.data;
+  if (perfs.data) demoPerformers = perfs.data;
+  if (scrs.data) demoScores = scrs.data;
+  if (ucs.data) demoUserCompetitionStatus = ucs.data;
+}
+
+let realtimeChannel: RealtimeChannel | null = null;
+
+function setupRealtimeSubscription() {
+  const sb = getSupabase();
+  if (!sb || realtimeChannel) return;
+
+  realtimeChannel = sb
+    .channel('db-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'competitions' }, async () => {
+      const { data } = await sb.from('competitions').select('*');
+      if (data) demoCompetitions = data;
+      notify('competitions');
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'rounds' }, async () => {
+      const { data } = await sb.from('rounds').select('*');
+      if (data) demoRounds = data;
+      notify('rounds');
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'performers' }, async () => {
+      const { data } = await sb.from('performers').select('*');
+      if (data) demoPerformers = data;
+      notify('performers');
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'scores' }, async () => {
+      const { data } = await sb.from('scores').select('*');
+      if (data) demoScores = data;
+      notify('scores');
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'user_competition_status' }, async () => {
+      const { data } = await sb.from('user_competition_status').select('*');
+      if (data) demoUserCompetitionStatus = data;
+      notify('user_competition_status');
+    })
+    .subscribe();
+}
+
+// ===== Initialize =====
 export function initDemoData(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
+    // Always create users in memory first (for PIN auth)
     const pins = ['0916', '0105', '0312', '0803', '0417', '0107'];
     const names = ['ひ', 'か', 'り', 'た', 'こ', 'あ'];
     const emojis = ['🎸', '🎹', '📯', '🎵', '🚗', '🌸'];
@@ -90,14 +152,79 @@ export function initDemoData(): Promise<void> {
       });
     }
 
-    // Restore saved data from localStorage
-    loadFromStorage();
+    if (isSupabaseConfigured()) {
+      const sb = getSupabase();
+      if (sb) {
+        // Seed users into Supabase if not exist
+        await sb.from('users').upsert(
+          demoUsers.map((u) => ({
+            id: u.id,
+            name: u.name,
+            avatar_emoji: u.avatar_emoji,
+            pin_hash: u.pin_hash,
+            is_admin: u.is_admin,
+          })),
+          { onConflict: 'id' }
+        );
+
+        // Load all data from Supabase
+        await supabaseLoadAll();
+
+        // Setup realtime
+        setupRealtimeSubscription();
+
+        console.log('Supabase connected - data synced across devices');
+      }
+    } else {
+      // Fallback: load from localStorage
+      loadFromStorage();
+      console.log('Running in offline mode (localStorage)');
+    }
   })();
 
   return initPromise;
 }
 
-// ===== User Operations =====
+// ===== Refresh from Supabase (call after local mutations) =====
+async function syncAfterMutation(table: string) {
+  const sb = getSupabase();
+  if (!sb) {
+    notify(table);
+    return;
+  }
+
+  // Refresh the specific table from Supabase
+  switch (table) {
+    case 'competitions': {
+      const { data } = await sb.from('competitions').select('*');
+      if (data) demoCompetitions = data;
+      break;
+    }
+    case 'rounds': {
+      const { data } = await sb.from('rounds').select('*');
+      if (data) demoRounds = data;
+      break;
+    }
+    case 'performers': {
+      const { data } = await sb.from('performers').select('*');
+      if (data) demoPerformers = data;
+      break;
+    }
+    case 'scores': {
+      const { data } = await sb.from('scores').select('*');
+      if (data) demoScores = data;
+      break;
+    }
+    case 'user_competition_status': {
+      const { data } = await sb.from('user_competition_status').select('*');
+      if (data) demoUserCompetitionStatus = data;
+      break;
+    }
+  }
+  notify(table);
+}
+
+// ===== Database Operations =====
 export const demoDb = {
   // Users
   getUsers: () => [...demoUsers],
@@ -113,14 +240,26 @@ export const demoDb = {
       created_at: new Date().toISOString(),
     };
     demoCompetitions.push(newComp);
-    notify('competitions');
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('competitions').insert(newComp).then(() => syncAfterMutation('competitions'));
+    } else {
+      notify('competitions');
+    }
     return newComp;
   },
   updateCompetition: (id: string, updates: Partial<Competition>) => {
     const idx = demoCompetitions.findIndex((c) => c.id === id);
     if (idx >= 0) {
       demoCompetitions[idx] = { ...demoCompetitions[idx], ...updates };
-      notify('competitions');
+
+      const sb = getSupabase();
+      if (sb) {
+        sb.from('competitions').update(updates).eq('id', id).then(() => syncAfterMutation('competitions'));
+      } else {
+        notify('competitions');
+      }
       return demoCompetitions[idx];
     }
     return null;
@@ -134,7 +273,13 @@ export const demoDb = {
   createRound: (round: Omit<Round, 'id'>) => {
     const newRound: Round = { ...round, id: `round-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` };
     demoRounds.push(newRound);
-    notify('rounds');
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('rounds').insert(newRound).then(() => syncAfterMutation('rounds'));
+    } else {
+      notify('rounds');
+    }
     return newRound;
   },
 
@@ -151,14 +296,26 @@ export const demoDb = {
       id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     };
     demoPerformers.push(newPerformer);
-    notify('performers');
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('performers').insert(newPerformer).then(() => syncAfterMutation('performers'));
+    } else {
+      notify('performers');
+    }
     return newPerformer;
   },
   updatePerformer: (id: string, updates: Partial<Performer>) => {
     const idx = demoPerformers.findIndex((p) => p.id === id);
     if (idx >= 0) {
       demoPerformers[idx] = { ...demoPerformers[idx], ...updates };
-      notify('performers');
+
+      const sb = getSupabase();
+      if (sb) {
+        sb.from('performers').update(updates).eq('id', id).then(() => syncAfterMutation('performers'));
+      } else {
+        notify('performers');
+      }
       return demoPerformers[idx];
     }
     return null;
@@ -166,7 +323,19 @@ export const demoDb = {
   deletePerformer: (id: string) => {
     demoPerformers = demoPerformers.filter((p) => p.id !== id);
     demoScores = demoScores.filter((s) => s.performer_id !== id);
-    notify('performers');
+
+    const sb = getSupabase();
+    if (sb) {
+      Promise.all([
+        sb.from('scores').delete().eq('performer_id', id),
+        sb.from('performers').delete().eq('id', id),
+      ]).then(() => {
+        syncAfterMutation('performers');
+        syncAfterMutation('scores');
+      });
+    } else {
+      notify('performers');
+    }
   },
 
   // Scores
@@ -180,22 +349,41 @@ export const demoDb = {
     const existingIdx = demoScores.findIndex(
       (s) => s.user_id === score.user_id && s.performer_id === score.performer_id
     );
+    const now = new Date().toISOString();
+
     if (existingIdx >= 0) {
       demoScores[existingIdx] = {
         ...demoScores[existingIdx],
         ...score,
-        scored_at: new Date().toISOString(),
+        scored_at: now,
       };
-      notify('scores');
+
+      const sb = getSupabase();
+      if (sb) {
+        sb.from('scores')
+          .update({ ...score, scored_at: now })
+          .eq('user_id', score.user_id)
+          .eq('performer_id', score.performer_id)
+          .then(() => syncAfterMutation('scores'));
+      } else {
+        notify('scores');
+      }
       return demoScores[existingIdx];
     }
+
     const newScore: Score = {
       ...score,
       id: `score-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      scored_at: new Date().toISOString(),
+      scored_at: now,
     };
     demoScores.push(newScore);
-    notify('scores');
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('scores').insert(newScore).then(() => syncAfterMutation('scores'));
+    } else {
+      notify('scores');
+    }
     return newScore;
   },
 
@@ -206,6 +394,7 @@ export const demoDb = {
     ) || null,
   getAllCompetitionStatus: (competitionId: string) =>
     demoUserCompetitionStatus.filter((s) => s.competition_id === competitionId),
+
   // Ensure final round performers exist by name (create if not yet present)
   ensureFinalRoundPerformer: (competitionId: string, name: string): Performer => {
     const rounds = demoRounds
@@ -230,7 +419,13 @@ export const demoDb = {
       display_label: `最終${String.fromCharCode(65 + count)}`,
     };
     demoPerformers.push(newPerf);
-    notify('performers');
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('performers').insert(newPerf).then(() => syncAfterMutation('performers'));
+    } else {
+      notify('performers');
+    }
     return newPerf;
   },
 
@@ -253,15 +448,40 @@ export const demoDb = {
         ...demoUserCompetitionStatus[existingIdx],
         ...status,
       };
-      notify('user_competition_status');
+
+      const sb = getSupabase();
+      if (sb) {
+        sb.from('user_competition_status')
+          .update(status)
+          .eq('user_id', status.user_id)
+          .eq('competition_id', status.competition_id)
+          .then(() => syncAfterMutation('user_competition_status'));
+      } else {
+        notify('user_competition_status');
+      }
       return demoUserCompetitionStatus[existingIdx];
     }
+
     const newStatus: UserCompetitionStatus = {
       ...status,
       id: `ucs-${Date.now()}`,
     };
     demoUserCompetitionStatus.push(newStatus);
-    notify('user_competition_status');
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('user_competition_status').insert(newStatus).then(() => syncAfterMutation('user_competition_status'));
+    } else {
+      notify('user_competition_status');
+    }
     return newStatus;
+  },
+
+  // Force refresh all data from Supabase
+  refreshAll: async () => {
+    if (isSupabaseConfigured()) {
+      await supabaseLoadAll();
+      notify('*');
+    }
   },
 };

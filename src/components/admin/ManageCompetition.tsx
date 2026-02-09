@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { Competition, Round, Performer, CompetitionStatus } from '../../types/database';
 import { demoDb } from '../../lib/demoData';
@@ -10,6 +10,9 @@ export default function ManageCompetition() {
   const [rounds, setRounds] = useState<Round[]>([]);
   const [performers, setPerformers] = useState<Record<string, Performer[]>>({});
   const [newPerformerName, setNewPerformerName] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -18,6 +21,14 @@ export default function ManageCompetition() {
     setCompetition(comp);
     refresh();
   }, [id, navigate]);
+
+  // Focus edit input when editing starts
+  useEffect(() => {
+    if (editingId && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingId]);
 
   const refresh = () => {
     if (!id) return;
@@ -48,6 +59,29 @@ export default function ManageCompetition() {
   const handleDeletePerformer = (perfId: string) => {
     demoDb.deletePerformer(perfId);
     refresh();
+  };
+
+  const handleStartEdit = (perf: Performer) => {
+    setEditingId(perf.id);
+    setEditingName(perf.name);
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingId) return;
+    const name = editingName.trim();
+    if (!name) {
+      setEditingId(null);
+      return;
+    }
+    demoDb.updatePerformer(editingId, { name });
+    setEditingId(null);
+    setEditingName('');
+    refresh();
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditingName('');
   };
 
   const handleStatusChange = (status: CompetitionStatus) => {
@@ -103,13 +137,45 @@ export default function ManageCompetition() {
                 className="flex items-center gap-3 p-3 rounded-xl bg-bg-card border border-white/10"
               >
                 <span className="w-8 text-center text-text-secondary text-sm">{i + 1}</span>
-                <span className="flex-1 font-medium">{perf.name}</span>
-                <button
-                  onClick={() => handleDeletePerformer(perf.id)}
-                  className="text-danger/60 hover:text-danger text-lg px-2"
-                >
-                  ×
-                </button>
+                {editingId === perf.id ? (
+                  <>
+                    <input
+                      ref={editInputRef}
+                      type="text"
+                      value={editingName}
+                      onChange={(e) => setEditingName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSaveEdit();
+                        if (e.key === 'Escape') handleCancelEdit();
+                      }}
+                      onBlur={handleSaveEdit}
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-bg-secondary border border-gold focus:outline-none text-sm"
+                    />
+                    <button
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleSaveEdit}
+                      className="text-success text-sm px-2 font-bold"
+                    >
+                      ✓
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => handleStartEdit(perf)}
+                      className="flex-1 font-medium text-left hover:text-gold transition-colors"
+                      title="タップして名前を編集"
+                    >
+                      {perf.name}
+                    </button>
+                    <button
+                      onClick={() => handleDeletePerformer(perf.id)}
+                      className="text-danger/60 hover:text-danger text-lg px-2"
+                    >
+                      ×
+                    </button>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -132,6 +198,8 @@ export default function ManageCompetition() {
           </div>
 
           <p className="text-xs text-text-secondary mt-2">
+            ※ 名前をタップすると編集できます（採点データは保持されます）
+            <br />
             ※ ネタ順は各ユーザーが放送を見ながら自分で採点した順番になります
           </p>
         </div>

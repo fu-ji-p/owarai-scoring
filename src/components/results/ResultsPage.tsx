@@ -4,7 +4,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { demoDb } from '../../lib/demoData';
 import { standardDeviation, pearsonCorrelation } from '../../lib/utils';
 import * as XLSX from 'xlsx';
-import type { User } from '../../types/database';
+import type { User, Performer } from '../../types/database';
 
 type Tab = 'personal' | 'all' | 'analysis';
 
@@ -26,6 +26,20 @@ export default function ResultsPage() {
 
   const allScores = competitionId ? demoDb.getScoresByCompetition(competitionId) : [];
   const performers = selectedRoundId ? demoDb.getPerformersByRound(selectedRoundId) : [];
+
+  // All performers across all rounds (for analysis)
+  const allPerformers = useMemo(() => {
+    const perfMap = new Map<string, Performer & { roundName: string }>();
+    rounds.forEach((r) => {
+      demoDb.getPerformersByRound(r.id).forEach((p) => {
+        // Use name as key to deduplicate (same performer in 1st round and final)
+        if (!perfMap.has(p.name)) {
+          perfMap.set(p.name, { ...p, roundName: r.name });
+        }
+      });
+    });
+    return Array.from(perfMap.values());
+  }, [rounds]);
 
   // Sort performers by the user's scoring order (scored_at = ネタ順)
   const sortedPerformers = useMemo(() => {
@@ -63,11 +77,10 @@ export default function ResultsPage() {
 
   const roundScores = allScores.filter((s) => s.round_id === selectedRoundId);
 
-  // ==== Analysis Calculations ====
-  const analysis = useMemo(() => {
+  // ==== Per-round Analysis (for personal & all tabs) ====
+  const roundAnalysis = useMemo(() => {
     if (sortedPerformers.length === 0 || visibleUsers.length === 0) return null;
 
-    // Per performer stats
     const performerStats = sortedPerformers.map((p) => {
       const pScores = roundScores
         .filter((s) => s.performer_id === p.id && visibleUsers.some((u) => u.id === s.user_id))
@@ -83,25 +96,10 @@ export default function ResultsPage() {
       };
     });
 
-    // Ranking by avg
     const ranked = [...performerStats].sort((a, b) => b.avg - a.avg);
-    ranked.forEach((r, i) => { (r as typeof r & {rank: number}).rank = i + 1; });
+    ranked.forEach((r, i) => { (r as typeof r & { rank: number }).rank = i + 1; });
 
-    // Per user stats
-    const userStats = visibleUsers.map((u) => {
-      const uScores = roundScores.filter((s) => s.user_id === u.id);
-      const scoreValues = uScores.map((s) => s.score);
-      const avg = scoreValues.length > 0 ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length : 0;
-      const highestScore = uScores.length > 0 ? uScores.reduce((a, b) => a.score > b.score ? a : b) : null;
-      const lowestScore = uScores.length > 0 ? uScores.reduce((a, b) => a.score < b.score ? a : b) : null;
-      return {
-        user: u,
-        avg,
-        std: standardDeviation(scoreValues),
-        highest: highestScore ? sortedPerformers.find((p) => p.id === highestScore.performer_id)?.name : '-',
-        lowest: lowestScore ? sortedPerformers.find((p) => p.id === lowestScore.performer_id)?.name : '-',
-      };
-    });
+    const champion = ranked[0];
 
     // Most agreed / disagreed
     const mostAgreed = performerStats.length > 0
@@ -111,15 +109,67 @@ export default function ResultsPage() {
       ? [...performerStats].filter((p) => p.scores.length > 1).sort((a, b) => b.std - a.std)[0]
       : null;
 
-    // Correlation matrix
+    return { performerStats, ranked, champion, mostAgreed, mostDisagreed };
+  }, [sortedPerformers, visibleUsers, roundScores]);
+
+  // ==== Competition-wide Analysis (全ラウンド横断) ====
+  const overallAnalysis = useMemo(() => {
+    if (allPerformers.length === 0 || visibleUsers.length === 0) return null;
+
+    // Collect all performer IDs across all rounds, grouped by name
+    const allRoundPerformers: { name: string; perfIds: string[] }[] = [];
+    const nameMap = new Map<string, string[]>();
+    rounds.forEach((r) => {
+      demoDb.getPerformersByRound(r.id).forEach((p) => {
+        if (!nameMap.has(p.name)) nameMap.set(p.name, []);
+        nameMap.get(p.name)!.push(p.id);
+      });
+    });
+    nameMap.forEach((perfIds, name) => {
+      allRoundPerformers.push({ name, perfIds });
+    });
+
+    // Per user stats (across all rounds)
+    const userStats = visibleUsers.map((u) => {
+      const uScores = allScores.filter((s) => s.user_id === u.id);
+      const scoreValues = uScores.map((s) => s.score);
+      const avg = scoreValues.length > 0 ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length : 0;
+
+      // Find highest/lowest across all rounds
+      const highestScore = uScores.length > 0 ? uScores.reduce((a, b) => a.score > b.score ? a : b) : null;
+      const lowestScore = uScores.length > 0 ? uScores.reduce((a, b) => a.score < b.score ? a : b) : null;
+
+      // Find performer name for highest/lowest
+      const findPerfName = (performerId: string): string => {
+        for (const r of rounds) {
+          const perf = demoDb.getPerformersByRound(r.id).find((p) => p.id === performerId);
+          if (perf) return perf.name;
+        }
+        return '-';
+      };
+
+      return {
+        user: u,
+        avg,
+        std: standardDeviation(scoreValues),
+        scoredCount: scoreValues.length,
+        highest: highestScore ? findPerfName(highestScore.performer_id) : '-',
+        highestScore: highestScore?.score ?? 0,
+        lowest: lowestScore ? findPerfName(lowestScore.performer_id) : '-',
+        lowestScore: lowestScore?.score ?? 0,
+      };
+    });
+
+    // Correlation matrix (across all rounds, matching by performer name)
     const correlations: { user1: User; user2: User; correlation: number }[] = [];
     for (let i = 0; i < visibleUsers.length; i++) {
       for (let j = i + 1; j < visibleUsers.length; j++) {
         const u1Scores: number[] = [];
         const u2Scores: number[] = [];
-        sortedPerformers.forEach((p) => {
-          const s1 = roundScores.find((s) => s.user_id === visibleUsers[i].id && s.performer_id === p.id);
-          const s2 = roundScores.find((s) => s.user_id === visibleUsers[j].id && s.performer_id === p.id);
+        allRoundPerformers.forEach(({ perfIds }) => {
+          // Find scores for both users for this performer (any round)
+          const s1 = allScores.find((s) => s.user_id === visibleUsers[i].id && perfIds.includes(s.performer_id));
+          const s2 = allScores.find((s) => s.user_id === visibleUsers[j].id && perfIds.includes(s.performer_id));
           if (s1 && s2) {
             u1Scores.push(s1.score);
             u2Scores.push(s2.score);
@@ -133,33 +183,50 @@ export default function ResultsPage() {
       }
     }
 
+    // Most agreed / disagreed (across all rounds)
+    const performerOverallStats = allRoundPerformers.map(({ name, perfIds }) => {
+      const pScores = allScores
+        .filter((s) => perfIds.includes(s.performer_id) && visibleUsers.some((u) => u.id === s.user_id))
+        .map((s) => s.score);
+      const avg = pScores.length > 0 ? pScores.reduce((a, b) => a + b, 0) / pScores.length : 0;
+      return { name, scores: pScores, avg, std: standardDeviation(pScores) };
+    });
+
+    const mostAgreed = performerOverallStats.length > 0
+      ? [...performerOverallStats].filter((p) => p.scores.length > 1).sort((a, b) => a.std - b.std)[0]
+      : null;
+    const mostDisagreed = performerOverallStats.length > 0
+      ? [...performerOverallStats].filter((p) => p.scores.length > 1).sort((a, b) => b.std - a.std)[0]
+      : null;
+
     // Judge type
     const getJudgeType = (u: typeof userStats[0]) => {
       const globalAvg = userStats.reduce((a, b) => a + b.avg, 0) / userStats.length;
       const maxStd = Math.max(...userStats.map((s) => s.std));
       const minStd = Math.min(...userStats.map((s) => s.std));
 
-      if (u.avg < globalAvg - 10) return { type: '辛口審査員', emoji: '🧐' };
-      if (u.avg > globalAvg + 10) return { type: '優しさの鬼', emoji: '😇' };
+      if (u.avg < globalAvg - 5) return { type: '辛口審査員', emoji: '🧐' };
+      if (u.avg > globalAvg + 5) return { type: '優しさの鬼', emoji: '😇' };
       if (u.std === maxStd) return { type: 'メリハリ審査員', emoji: '🎢' };
       if (u.std === minStd) return { type: '安定の職人', emoji: '🧑‍🎨' };
       return { type: 'バランス型', emoji: '⚖️' };
     };
 
-    // Our champion
-    const champion = ranked[0];
+    // Overall champion (highest avg across all rounds)
+    const overallChampion = performerOverallStats.length > 0
+      ? [...performerOverallStats].sort((a, b) => b.avg - a.avg)[0]
+      : null;
 
     return {
-      performerStats,
-      ranked,
       userStats,
+      correlations,
       mostAgreed,
       mostDisagreed,
-      correlations,
       getJudgeType,
-      champion,
+      overallChampion,
+      totalScores: allScores.length,
     };
-  }, [sortedPerformers, visibleUsers, roundScores]);
+  }, [allPerformers, visibleUsers, allScores, rounds]);
 
   // ==== Excel Export ====
   const handleExportExcel = useCallback(() => {
@@ -172,7 +239,6 @@ export default function ResultsPage() {
       const roundPerformers = demoDb.getPerformersByRound(round.id);
       const roundAllScores = allScores.filter((s) => s.round_id === round.id);
 
-      // Sort performers by the current user's scoring order (ネタ順)
       const sorted = [...roundPerformers].sort((a, b) => {
         if (!user) return 0;
         const scoreA = roundAllScores.find((s) => s.performer_id === a.id && s.user_id === user.id);
@@ -182,17 +248,14 @@ export default function ResultsPage() {
         return timeA - timeB;
       });
 
-      // Get all users who scored in this round
       const scoringUsers = visibleUsers.filter((u) =>
         roundAllScores.some((s) => s.user_id === u.id)
       );
 
       if (sorted.length === 0) return;
 
-      // Build header row
       const header = ['ネタ順', '出場者', ...scoringUsers.map((u) => u.name), '平均', 'コメント'];
 
-      // Build data rows
       const rows = sorted.map((p, i) => {
         const userScores = scoringUsers.map((u) => {
           const s = roundAllScores.find((sc) => sc.user_id === u.id && sc.performer_id === p.id);
@@ -203,14 +266,12 @@ export default function ResultsPage() {
           ? (validScores.reduce((a, b) => a + b, 0) / validScores.length).toFixed(1)
           : '';
 
-        // Get current user's comment
         const myScore = user ? roundAllScores.find((s) => s.user_id === user.id && s.performer_id === p.id) : null;
         const comment = myScore?.comment ?? '';
 
         return [i + 1, p.name, ...userScores, avg, comment];
       });
 
-      // Add summary row
       const summaryRow = ['', '平均', ...scoringUsers.map((u) => {
         const uScores = roundAllScores.filter((s) => s.user_id === u.id).map((s) => s.score);
         return uScores.length > 0 ? Number((uScores.reduce((a, b) => a + b, 0) / uScores.length).toFixed(1)) : '';
@@ -219,19 +280,17 @@ export default function ResultsPage() {
       const wsData = [header, ...rows, [], summaryRow];
       const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-      // Column widths
       ws['!cols'] = [
-        { wch: 8 },   // ネタ順
-        { wch: 20 },  // 出場者
+        { wch: 8 },
+        { wch: 20 },
         ...scoringUsers.map(() => ({ wch: 10 })),
-        { wch: 8 },   // 平均
-        { wch: 30 },  // コメント
+        { wch: 8 },
+        { wch: 30 },
       ];
 
       XLSX.utils.book_append_sheet(wb, ws, round.name);
     });
 
-    // Export
     const fileName = `${competition.name}_採点結果.xlsx`;
     XLSX.writeFile(wb, fileName);
   }, [competition, competitionId, rounds, allScores, visibleUsers, user]);
@@ -261,8 +320,23 @@ export default function ResultsPage() {
       <h1 className="text-xl font-bold text-center mb-2">{competition.name}</h1>
       <p className="text-center text-text-secondary text-sm mb-4">結果発表</p>
 
-      {/* Round Tabs */}
-      {rounds.length > 1 && (
+      {/* Tab Bar */}
+      <div className="flex gap-1 bg-bg-secondary rounded-xl p-1 mb-6">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              tab === t.key ? 'bg-gold text-black' : 'text-text-secondary hover:text-white'
+            }`}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Round Tabs (only for personal & all tabs) */}
+      {tab !== 'analysis' && rounds.length > 1 && (
         <div className="flex gap-2 justify-center mb-4">
           {rounds.map((r) => (
             <button
@@ -279,21 +353,6 @@ export default function ResultsPage() {
           ))}
         </div>
       )}
-
-      {/* Tab Bar */}
-      <div className="flex gap-1 bg-bg-secondary rounded-xl p-1 mb-6">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              tab === t.key ? 'bg-gold text-black' : 'text-text-secondary hover:text-white'
-            }`}
-          >
-            {t.icon} {t.label}
-          </button>
-        ))}
-      </div>
 
       {/* ===== Personal Tab ===== */}
       {tab === 'personal' && (
@@ -320,7 +379,6 @@ export default function ResultsPage() {
                 <div className="text-2xl font-black text-gold">
                   {myScore ? myScore.score : '-'}
                 </div>
-                {/* Simple bar */}
                 {myScore && (
                   <div className="w-20 h-2 bg-bg-secondary rounded-full overflow-hidden">
                     <div
@@ -336,7 +394,7 @@ export default function ResultsPage() {
       )}
 
       {/* ===== All Tab ===== */}
-      {tab === 'all' && analysis && (
+      {tab === 'all' && roundAnalysis && (
         <div className="space-y-6">
           {/* Score Table */}
           <div className="overflow-x-auto -mx-4 px-4">
@@ -354,10 +412,10 @@ export default function ResultsPage() {
                 </tr>
               </thead>
               <tbody>
-                {analysis.ranked.map((ps) => (
+                {roundAnalysis.ranked.map((ps) => (
                   <tr key={ps.performer.id} className="border-b border-white/5 hover:bg-white/5">
                     <td className="py-2 px-2">
-                      <span className="mr-1 text-gold text-xs">#{(ps as typeof ps & {rank: number}).rank}</span>
+                      <span className="mr-1 text-gold text-xs">#{(ps as typeof ps & { rank: number }).rank}</span>
                       {ps.performer.name}
                     </td>
                     {visibleUsers.map((u) => {
@@ -380,44 +438,77 @@ export default function ResultsPage() {
           </div>
 
           {/* Stats */}
-          {analysis.mostAgreed && (
+          {roundAnalysis.mostAgreed && (
             <div className="grid grid-cols-2 gap-3">
               <div className="p-4 rounded-xl bg-bg-card border border-white/10">
                 <div className="text-xs text-text-secondary mb-1">🤝 最も意見が一致</div>
-                <div className="font-bold">{analysis.mostAgreed.performer.name}</div>
-                <div className="text-xs text-text-secondary">SD: {analysis.mostAgreed.std.toFixed(1)}</div>
+                <div className="font-bold">{roundAnalysis.mostAgreed.performer.name}</div>
+                <div className="text-xs text-text-secondary">SD: {roundAnalysis.mostAgreed.std.toFixed(1)}</div>
               </div>
-              {analysis.mostDisagreed && (
+              {roundAnalysis.mostDisagreed && (
                 <div className="p-4 rounded-xl bg-bg-card border border-white/10">
                   <div className="text-xs text-text-secondary mb-1">💥 最も意見が分かれた</div>
-                  <div className="font-bold">{analysis.mostDisagreed.performer.name}</div>
-                  <div className="text-xs text-text-secondary">SD: {analysis.mostDisagreed.std.toFixed(1)}</div>
+                  <div className="font-bold">{roundAnalysis.mostDisagreed.performer.name}</div>
+                  <div className="text-xs text-text-secondary">SD: {roundAnalysis.mostDisagreed.std.toFixed(1)}</div>
                 </div>
               )}
             </div>
           )}
 
           {/* Our Champion */}
-          {analysis.champion && (
+          {roundAnalysis.champion && (
             <div className="p-6 rounded-2xl bg-gradient-to-br from-gold/20 to-gold/5 border-2 border-gold/30 text-center">
               <div className="text-3xl mb-2">🏆</div>
               <div className="text-sm text-gold mb-1">我が家のチャンピオン</div>
-              <div className="text-2xl font-black">{analysis.champion.performer.name}</div>
-              <div className="text-gold text-lg mt-1">平均 {analysis.champion.avg.toFixed(1)}点</div>
+              <div className="text-2xl font-black">{roundAnalysis.champion.performer.name}</div>
+              <div className="text-gold text-lg mt-1">平均 {roundAnalysis.champion.avg.toFixed(1)}点</div>
             </div>
           )}
         </div>
       )}
 
-      {/* ===== Analysis Tab ===== */}
-      {tab === 'analysis' && analysis && (
+      {/* ===== Analysis Tab (大会全体の分析) ===== */}
+      {tab === 'analysis' && overallAnalysis && (
         <div className="space-y-6">
+          {/* Overall title */}
+          <div className="text-center text-text-secondary text-sm">
+            全ラウンド通しての分析（{overallAnalysis.totalScores}件の採点データ）
+          </div>
+
+          {/* Overall Champion */}
+          {overallAnalysis.overallChampion && (
+            <div className="p-6 rounded-2xl bg-gradient-to-br from-gold/20 to-gold/5 border-2 border-gold/30 text-center">
+              <div className="text-3xl mb-2">🏆</div>
+              <div className="text-sm text-gold mb-1">我が家の総合チャンピオン</div>
+              <div className="text-2xl font-black">{overallAnalysis.overallChampion.name}</div>
+              <div className="text-gold text-lg mt-1">平均 {overallAnalysis.overallChampion.avg.toFixed(1)}点</div>
+            </div>
+          )}
+
+          {/* Most agreed / disagreed (overall) */}
+          {overallAnalysis.mostAgreed && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-4 rounded-xl bg-bg-card border border-white/10">
+                <div className="text-xs text-text-secondary mb-1">🤝 最も意見が一致</div>
+                <div className="font-bold">{overallAnalysis.mostAgreed.name}</div>
+                <div className="text-xs text-text-secondary">SD: {overallAnalysis.mostAgreed.std.toFixed(1)}</div>
+              </div>
+              {overallAnalysis.mostDisagreed && (
+                <div className="p-4 rounded-xl bg-bg-card border border-white/10">
+                  <div className="text-xs text-text-secondary mb-1">💥 最も意見が分かれた</div>
+                  <div className="font-bold">{overallAnalysis.mostDisagreed.name}</div>
+                  <div className="text-xs text-text-secondary">SD: {overallAnalysis.mostDisagreed.std.toFixed(1)}</div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Judge Types */}
           <div>
-            <h3 className="text-lg font-bold mb-3">🎭 あなたの審査員タイプ</h3>
+            <h3 className="text-lg font-bold mb-3">🎭 審査員タイプ</h3>
             <div className="grid grid-cols-2 gap-3">
-              {analysis.userStats.map((us) => {
-                const judgeType = analysis.getJudgeType(us);
+              {overallAnalysis.userStats.map((us) => {
+                const judgeType = overallAnalysis.getJudgeType(us);
                 return (
                   <div key={us.user.id} className="p-4 rounded-xl bg-bg-card border border-white/10 text-center">
                     <div className="text-3xl mb-1">{us.user.avatar_emoji}</div>
@@ -426,6 +517,9 @@ export default function ResultsPage() {
                     <div className="text-gold text-sm font-bold">{judgeType.type}</div>
                     <div className="text-xs text-text-secondary mt-1">
                       平均: {us.avg.toFixed(1)} / SD: {us.std.toFixed(1)}
+                    </div>
+                    <div className="text-[10px] text-text-secondary mt-0.5">
+                      {us.scoredCount}組を採点
                     </div>
                   </div>
                 );
@@ -437,13 +531,13 @@ export default function ResultsPage() {
           <div>
             <h3 className="text-lg font-bold mb-3">📋 採点傾向</h3>
             <div className="space-y-2">
-              {analysis.userStats.map((us) => (
+              {overallAnalysis.userStats.map((us) => (
                 <div key={us.user.id} className="p-3 rounded-xl bg-bg-card border border-white/10 flex items-center gap-3">
                   <span className="text-2xl">{us.user.avatar_emoji}</span>
                   <div className="flex-1 text-sm">
                     <div className="font-medium">{us.user.name}</div>
                     <div className="text-text-secondary text-xs">
-                      最高点: {us.highest} / 最低点: {us.lowest}
+                      最高: {us.highest}({us.highestScore}点) / 最低: {us.lowest}({us.lowestScore}点)
                     </div>
                   </div>
                   <div className="text-right">
@@ -456,11 +550,11 @@ export default function ResultsPage() {
           </div>
 
           {/* Correlation Ranking */}
-          {analysis.correlations.length > 0 && (
+          {overallAnalysis.correlations.length > 0 && (
             <div>
               <h3 className="text-lg font-bold mb-3">👫 審査員相性ランキング</h3>
               <div className="space-y-2">
-                {[...analysis.correlations]
+                {[...overallAnalysis.correlations]
                   .sort((a, b) => b.correlation - a.correlation)
                   .map((c, i) => (
                     <div key={i} className="p-3 rounded-xl bg-bg-card border border-white/10 flex items-center gap-3">
@@ -483,7 +577,7 @@ export default function ResultsPage() {
         </div>
       )}
 
-      {/* ===== Excel Export Button (固定フッター) ===== */}
+      {/* ===== Excel Export Button ===== */}
       <div className="mt-8 mb-4">
         <button
           onClick={handleExportExcel}

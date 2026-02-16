@@ -12,6 +12,8 @@ export default function ManageCompetition() {
   const [newPerformerName, setNewPerformerName] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const editInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -42,10 +44,10 @@ export default function ManageCompetition() {
   const firstRound = rounds[0];
   const firstRoundPerformers = firstRound ? (performers[firstRound.id] || []) : [];
 
-  const handleAddPerformer = () => {
+  const handleAddPerformer = async () => {
     const name = newPerformerName.trim();
     if (!name || !id || !firstRound) return;
-    demoDb.createPerformer({
+    await demoDb.createPerformer({
       competition_id: id,
       round_id: firstRound.id,
       name,
@@ -88,6 +90,17 @@ export default function ManageCompetition() {
     if (!id) return;
     demoDb.updateCompetition(id, { status });
     setCompetition((prev) => prev ? { ...prev, status } : null);
+  };
+
+  const handleDeleteCompetition = async () => {
+    if (!id || isDeleting) return;
+    setIsDeleting(true);
+    try {
+      await demoDb.deleteCompetition(id);
+      navigate('/');
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   if (!competition) return null;
@@ -214,6 +227,40 @@ export default function ManageCompetition() {
           </p>
         </div>
       )}
+
+      {/* === 大会を削除 === */}
+      <div className="mt-12 pt-6 border-t border-white/10">
+        {!showDeleteConfirm ? (
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="w-full py-3 rounded-xl text-danger/70 hover:text-danger text-sm border border-danger/20 hover:border-danger/50 transition-all"
+          >
+            大会を削除
+          </button>
+        ) : (
+          <div className="p-4 rounded-xl bg-danger/10 border border-danger/30">
+            <p className="text-center font-bold mb-2">本当に大会を削除しますか？</p>
+            <p className="text-center text-text-secondary text-xs mb-4">
+              「{competition.name}」と全ての採点データが削除されます。この操作は取り消せません。
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 py-3 rounded-xl bg-bg-card border border-white/10 text-sm font-medium hover:bg-bg-card-hover transition-all"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={handleDeleteCompetition}
+                disabled={isDeleting}
+                className="flex-1 py-3 rounded-xl bg-danger text-white text-sm font-bold hover:bg-danger/80 active:scale-[0.98] transition-all disabled:opacity-50"
+              >
+                {isDeleting ? '削除中...' : '削除する'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

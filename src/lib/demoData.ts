@@ -233,7 +233,7 @@ export const demoDb = {
   // Competitions
   getCompetitions: () => [...demoCompetitions].sort((a, b) => b.year - a.year),
   getCompetitionById: (id: string) => demoCompetitions.find((c) => c.id === id) || null,
-  createCompetition: (comp: Omit<Competition, 'id' | 'created_at'>) => {
+  createCompetition: async (comp: Omit<Competition, 'id' | 'created_at'>) => {
     const newComp: Competition = {
       ...comp,
       id: `comp-${Date.now()}`,
@@ -243,7 +243,8 @@ export const demoDb = {
 
     const sb = getSupabase();
     if (sb) {
-      sb.from('competitions').insert(newComp).then(() => syncAfterMutation('competitions'));
+      await sb.from('competitions').insert(newComp);
+      await syncAfterMutation('competitions');
     } else {
       notify('competitions');
     }
@@ -270,13 +271,14 @@ export const demoDb = {
     demoRounds
       .filter((r) => r.competition_id === competitionId)
       .sort((a, b) => a.round_order - b.round_order),
-  createRound: (round: Omit<Round, 'id'>) => {
+  createRound: async (round: Omit<Round, 'id'>) => {
     const newRound: Round = { ...round, id: `round-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` };
     demoRounds.push(newRound);
 
     const sb = getSupabase();
     if (sb) {
-      sb.from('rounds').insert(newRound).then(() => syncAfterMutation('rounds'));
+      await sb.from('rounds').insert(newRound);
+      await syncAfterMutation('rounds');
     } else {
       notify('rounds');
     }
@@ -290,7 +292,7 @@ export const demoDb = {
       .sort((a, b) => (a.performance_order || 999) - (b.performance_order || 999)),
   getPerformersByCompetition: (competitionId: string) =>
     demoPerformers.filter((p) => p.competition_id === competitionId),
-  createPerformer: (performer: Omit<Performer, 'id'>) => {
+  createPerformer: async (performer: Omit<Performer, 'id'>) => {
     const newPerformer: Performer = {
       ...performer,
       id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -299,7 +301,8 @@ export const demoDb = {
 
     const sb = getSupabase();
     if (sb) {
-      sb.from('performers').insert(newPerformer).then(() => syncAfterMutation('performers'));
+      await sb.from('performers').insert(newPerformer);
+      await syncAfterMutation('performers');
     } else {
       notify('performers');
     }
@@ -475,6 +478,29 @@ export const demoDb = {
       notify('user_competition_status');
     }
     return newStatus;
+  },
+
+  // Delete competition and all related data
+  deleteCompetition: async (competitionId: string) => {
+    // Remove all related data from memory
+    demoScores = demoScores.filter((s) => s.competition_id !== competitionId);
+    demoPerformers = demoPerformers.filter((p) => p.competition_id !== competitionId);
+    demoRounds = demoRounds.filter((r) => r.competition_id !== competitionId);
+    demoUserCompetitionStatus = demoUserCompetitionStatus.filter((s) => s.competition_id !== competitionId);
+    demoCompetitions = demoCompetitions.filter((c) => c.id !== competitionId);
+
+    const sb = getSupabase();
+    if (sb) {
+      // Supabase cascades deletes via ON DELETE CASCADE
+      await sb.from('competitions').delete().eq('id', competitionId);
+      await syncAfterMutation('competitions');
+      await syncAfterMutation('rounds');
+      await syncAfterMutation('performers');
+      await syncAfterMutation('scores');
+      await syncAfterMutation('user_competition_status');
+    } else {
+      notify('competitions');
+    }
   },
 
   // Force refresh all data from Supabase

@@ -25,40 +25,52 @@ export default function CreateCompetition() {
     setPerformerNames((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleCreate = () => {
-    const comp = demoDb.createCompetition({
-      type,
-      year,
-      name: `${config.label} ${year}`,
-      status: 'upcoming',
-      broadcast_date: `${year}-12-01`,
-    });
+  const [isCreating, setIsCreating] = useState(false);
 
-    // Create default rounds
-    const createdRounds = config.rounds.map((r, i) =>
-      demoDb.createRound({
-        competition_id: comp.id,
-        name: r.name,
-        round_order: i + 1,
-        scoring_type: r.scoringType,
-      })
-    );
+  const handleCreate = async () => {
+    if (isCreating) return;
+    setIsCreating(true);
 
-    // Add performers to 1st round
-    if (createdRounds.length > 0 && performerNames.length > 0) {
-      const firstRound = createdRounds[0];
-      performerNames.forEach((name, i) => {
-        demoDb.createPerformer({
-          competition_id: comp.id,
-          round_id: firstRound.id,
-          name,
-          performance_order: null,
-          display_label: `出場者${String.fromCharCode(65 + i)}`,
-        });
+    try {
+      const comp = await demoDb.createCompetition({
+        type,
+        year,
+        name: `${config.label} ${year}`,
+        status: 'upcoming',
+        broadcast_date: `${year}-12-01`,
       });
-    }
 
-    navigate(`/admin/competition/${comp.id}`);
+      // Create default rounds (must await each for FK constraints)
+      const createdRounds = [];
+      for (let i = 0; i < config.rounds.length; i++) {
+        const r = config.rounds[i];
+        const round = await demoDb.createRound({
+          competition_id: comp.id,
+          name: r.name,
+          round_order: i + 1,
+          scoring_type: r.scoringType,
+        });
+        createdRounds.push(round);
+      }
+
+      // Add performers to 1st round (must await each for FK constraints)
+      if (createdRounds.length > 0 && performerNames.length > 0) {
+        const firstRound = createdRounds[0];
+        for (let i = 0; i < performerNames.length; i++) {
+          await demoDb.createPerformer({
+            competition_id: comp.id,
+            round_id: firstRound.id,
+            name: performerNames[i],
+            performance_order: null,
+            display_label: `出場者${String.fromCharCode(65 + i)}`,
+          });
+        }
+      }
+
+      navigate(`/admin/competition/${comp.id}`);
+    } finally {
+      setIsCreating(false);
+    }
   };
 
   // Step 1: Choose type and year
@@ -211,11 +223,14 @@ export default function CreateCompetition() {
       {/* Create Button */}
       <button
         onClick={handleCreate}
-        className="w-full py-4 rounded-xl bg-gold text-black font-bold text-lg hover:bg-gold-dark active:scale-[0.98] transition-all"
+        disabled={isCreating}
+        className="w-full py-4 rounded-xl bg-gold text-black font-bold text-lg hover:bg-gold-dark active:scale-[0.98] transition-all disabled:opacity-50"
       >
-        {performerNames.length > 0
-          ? `大会を作成（${performerNames.length}組登録）`
-          : '出場者なしで作成'}
+        {isCreating
+          ? '作成中...'
+          : performerNames.length > 0
+            ? `大会を作成（${performerNames.length}組登録）`
+            : '出場者なしで作成'}
       </button>
     </div>
   );

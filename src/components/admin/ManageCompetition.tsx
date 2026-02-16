@@ -158,6 +158,7 @@ export default function ManageCompetition() {
                       value={editingName}
                       onChange={(e) => setEditingName(e.target.value)}
                       onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return;
                         if (e.key === 'Enter') handleSaveEdit();
                         if (e.key === 'Escape') handleCancelEdit();
                       }}
@@ -199,7 +200,7 @@ export default function ManageCompetition() {
               placeholder="芸人名を入力..."
               value={newPerformerName}
               onChange={(e) => setNewPerformerName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAddPerformer(); }}
+              onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === 'Enter') handleAddPerformer(); }}
               className="flex-1 px-4 py-3 rounded-xl bg-bg-card border border-white/10 focus:border-gold focus:outline-none text-sm"
             />
             <button

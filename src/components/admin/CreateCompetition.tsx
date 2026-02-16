@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { COMPETITION_CONFIGS, type CompetitionType } from '../../types/database';
 import { demoDb } from '../../lib/demoData';
@@ -10,8 +10,19 @@ export default function CreateCompetition() {
   const [step, setStep] = useState<'type' | 'performers'>('type');
   const [performerNames, setPerformerNames] = useState<string[]>([]);
   const [newName, setNewName] = useState('');
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   const config = COMPETITION_CONFIGS[type];
+
+  // Focus edit input when editing starts
+  useEffect(() => {
+    if (editingIndex !== null && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingIndex]);
 
   const handleAddPerformer = () => {
     const name = newName.trim();
@@ -23,6 +34,31 @@ export default function CreateCompetition() {
 
   const handleRemovePerformer = (index: number) => {
     setPerformerNames((prev) => prev.filter((_, i) => i !== index));
+    if (editingIndex === index) {
+      setEditingIndex(null);
+    }
+  };
+
+  const handleStartEdit = (index: number) => {
+    setEditingIndex(index);
+    setEditingName(performerNames[index]);
+  };
+
+  const handleSaveEdit = () => {
+    if (editingIndex === null) return;
+    const name = editingName.trim();
+    if (!name) {
+      setEditingIndex(null);
+      return;
+    }
+    setPerformerNames((prev) => prev.map((n, i) => i === editingIndex ? name : n));
+    setEditingIndex(null);
+    setEditingName('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingIndex(null);
+    setEditingName('');
   };
 
   const [isCreating, setIsCreating] = useState(false);
@@ -174,13 +210,46 @@ export default function CreateCompetition() {
             className="flex items-center gap-3 p-3 rounded-xl bg-bg-card border border-white/10"
           >
             <span className="w-8 text-center text-text-secondary text-sm">{i + 1}</span>
-            <span className="flex-1 font-medium">{name}</span>
-            <button
-              onClick={() => handleRemovePerformer(i)}
-              className="text-danger/60 hover:text-danger text-lg px-2"
-            >
-              ×
-            </button>
+            {editingIndex === i ? (
+              <>
+                <input
+                  ref={editInputRef}
+                  type="text"
+                  value={editingName}
+                  onChange={(e) => setEditingName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
+                    if (e.key === 'Enter') handleSaveEdit();
+                    if (e.key === 'Escape') handleCancelEdit();
+                  }}
+                  onBlur={handleSaveEdit}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-bg-secondary border border-gold focus:outline-none text-sm"
+                />
+                <button
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handleSaveEdit}
+                  className="text-success text-sm px-2 font-bold"
+                >
+                  ✓
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  onClick={() => handleStartEdit(i)}
+                  className="flex-1 font-medium text-left hover:text-gold transition-colors"
+                  title="タップして名前を編集"
+                >
+                  {name}
+                </button>
+                <button
+                  onClick={() => handleRemovePerformer(i)}
+                  className="text-danger/60 hover:text-danger text-lg px-2"
+                >
+                  ×
+                </button>
+              </>
+            )}
           </div>
         ))}
       </div>
@@ -192,7 +261,10 @@ export default function CreateCompetition() {
           placeholder="芸人名を入力..."
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleAddPerformer(); }}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === 'Enter') handleAddPerformer();
+          }}
           className="flex-1 px-4 py-3 rounded-xl bg-bg-card border border-white/10 focus:border-gold focus:outline-none text-sm"
         />
         <button
@@ -205,9 +277,9 @@ export default function CreateCompetition() {
       </div>
 
       <p className="text-xs text-text-secondary mb-8">
-        ※ ネタ順は放送を見ながら各自が入力します。ここでは名前だけでOKです。
+        ※ 名前をタップすると編集できます。
         <br />
-        ※ 後から管理画面でも追加・削除できます。
+        ※ ネタ順は放送を見ながら各自が入力します。ここでは名前だけでOKです。
       </p>
 
       {/* Counter */}

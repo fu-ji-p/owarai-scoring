@@ -23,6 +23,9 @@ export default function ScoringPage() {
   const [selectedFinalists, setSelectedFinalists] = useState<Set<string>>(new Set());
   const [finalistNames, setFinalistNames] = useState<string[]>([]);
 
+  // Which round to show/edit in final-round phase ('final' or 'first')
+  const [editingRound, setEditingRound] = useState<'final' | 'first'>('final');
+
   const competition = competitionId ? demoDb.getCompetitionById(competitionId) : null;
   const status = user && competitionId
     ? demoDb.getUserCompetitionStatus(user.id, competitionId)
@@ -77,6 +80,22 @@ export default function ScoringPage() {
     return performers[finalRound.id] || [];
   }, [performers, finalRound]);
 
+  // Auto-restore finalistNames from DB when returning to this page after completion
+  // (finalistNames is local state and resets on page load)
+  useEffect(() => {
+    if (finalRoundPerformers.length > 0 && finalistNames.length === 0) {
+      const seen = new Set<string>();
+      const names = finalRoundPerformers
+        .filter((p) => {
+          if (seen.has(p.name)) return false;
+          seen.add(p.name);
+          return true;
+        })
+        .map((p) => p.name);
+      setFinalistNames(names);
+    }
+  }, [finalRoundPerformers, finalistNames.length]);
+
   // My final round performers (only those I picked and scored/will score)
   // Deduplicate by name as a safety net in case duplicate records exist in DB
   const myFinalPerformers = useMemo(() => {
@@ -110,7 +129,10 @@ export default function ScoringPage() {
   }, [firstRoundAllScored, finalistNames]);
 
   // Get selected performer and score for ScoreCard
-  const currentRoundPerformers = phase === 'final-round' ? myFinalPerformers : firstRoundPerformers;
+  // In final-round phase, show either final or 1st round based on editingRound toggle
+  const currentRoundPerformers = phase === 'final-round'
+    ? (editingRound === 'final' ? myFinalPerformers : firstRoundPerformers)
+    : firstRoundPerformers;
   const selectedPerformer = currentRoundPerformers.find((p) => p.id === selectedPerformerId) ?? null;
   const selectedScore = selectedPerformer
     ? scores.find((s) => s.performer_id === selectedPerformer.id)
@@ -118,7 +140,10 @@ export default function ScoringPage() {
 
   const handleScore = (score: number, comment: string) => {
     if (!user || !selectedPerformer || !competitionId) return;
-    const roundId = phase === 'final-round' ? finalRound?.id : firstRound?.id;
+    // Use the round ID matching which round is currently being edited
+    const roundId = (phase === 'final-round' && editingRound === 'final')
+      ? finalRound?.id
+      : firstRound?.id;
     if (!roundId) return;
 
     demoDb.upsertScore({
@@ -261,10 +286,12 @@ export default function ScoringPage() {
 
   // === Scoring list view (1st round or final round) ===
   const isFirstRound = phase === 'first-round';
-  const displayPerformers = isFirstRound ? firstRoundPerformers : myFinalPerformers;
-  const scoredCount = isFirstRound ? firstRoundScored : finalRoundScored;
+  // In final-round phase, respect editingRound toggle for display
+  const isShowingFirst = isFirstRound || (phase === 'final-round' && editingRound === 'first');
+  const displayPerformers = isShowingFirst ? firstRoundPerformers : myFinalPerformers;
+  const scoredCount = isShowingFirst ? firstRoundScored : finalRoundScored;
   const allScored = isFirstRound ? firstRoundAllScored : finalRoundAllScored;
-  const roundLabel = isFirstRound ? (firstRound?.name ?? '1stラウンド') : (finalRound?.name ?? '最終決戦');
+  const roundLabel = isShowingFirst ? (firstRound?.name ?? '1stラウンド') : (finalRound?.name ?? '最終決戦');
 
   return (
     <div className="min-h-dvh px-4 py-6 max-w-lg mx-auto">
@@ -279,16 +306,47 @@ export default function ScoringPage() {
       </div>
 
       <h1 className="text-xl font-bold text-center mb-1">{competition.name}</h1>
-      <div className="text-center mb-2">
-        <span className={`inline-block px-3 py-1 rounded-full text-sm font-bold ${
-          isFirstRound ? 'bg-blue-500/20 text-blue-400' : 'bg-gold/20 text-gold'
-        }`}>
-          {roundLabel}
-        </span>
-      </div>
+
+      {/* Round toggle tabs (only shown in final-round phase) */}
+      {phase === 'final-round' && (
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => { setEditingRound('final'); setSelectedPerformerId(null); }}
+            className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${
+              editingRound === 'final'
+                ? 'bg-gold text-black'
+                : 'bg-bg-card text-text-secondary border border-white/10 hover:border-white/30'
+            }`}
+          >
+            🏆 最終決戦
+          </button>
+          <button
+            onClick={() => { setEditingRound('first'); setSelectedPerformerId(null); }}
+            className={`flex-1 py-2 rounded-xl text-sm font-bold transition-all ${
+              editingRound === 'first'
+                ? 'bg-blue-500 text-white'
+                : 'bg-bg-card text-text-secondary border border-white/10 hover:border-white/30'
+            }`}
+          >
+            ✏️ 1stラウンド修正
+          </button>
+        </div>
+      )}
+
+      {/* Round label (only shown when NOT in final-round phase) */}
+      {phase !== 'final-round' && (
+        <div className="text-center mb-2">
+          <span className="inline-block px-3 py-1 rounded-full text-sm font-bold bg-blue-500/20 text-blue-400">
+            {roundLabel}
+          </span>
+        </div>
+      )}
+
       <p className="text-center text-text-secondary text-sm mb-6">
-        {isFirstRound
-          ? '放送を見ながら、採点する出場者をタップしてください'
+        {isShowingFirst
+          ? (phase === 'final-round'
+              ? '1stラウンドの点数をタップして修正できます'
+              : '放送を見ながら、採点する出場者をタップしてください')
           : '最終決戦の出場者を採点してください'}
       </p>
 

@@ -399,14 +399,50 @@ export const demoDb = {
     demoUserCompetitionStatus.filter((s) => s.competition_id === competitionId),
 
   // Ensure final round performers exist by name (create if not yet present)
-  ensureFinalRoundPerformer: (competitionId: string, name: string): Performer => {
+  ensureFinalRoundPerformer: async (competitionId: string, name: string): Promise<Performer> => {
     const rounds = demoRounds
       .filter((r) => r.competition_id === competitionId)
       .sort((a, b) => a.round_order - b.round_order);
     const finalRound = rounds[rounds.length - 1];
     if (!finalRound) throw new Error('No final round');
 
-    // Check if already exists
+    const sb = getSupabase();
+    if (sb) {
+      // Supabase mode: always query DB directly to avoid race conditions
+      // (multiple users calling this simultaneously would cause duplicates
+      //  if we only check the in-memory cache)
+      const { data: existingInDb } = await sb
+        .from('performers')
+        .select('*')
+        .eq('round_id', finalRound.id)
+        .eq('name', name)
+        .maybeSingle();
+
+      if (existingInDb) {
+        // Sync to in-memory cache if missing
+        if (!demoPerformers.find((p) => p.id === existingInDb.id)) {
+          demoPerformers.push(existingInDb as Performer);
+        }
+        return existingInDb as Performer;
+      }
+
+      // Not found in DB: insert new record
+      const count = demoPerformers.filter((p) => p.round_id === finalRound.id).length;
+      const newPerf: Performer = {
+        id: `perf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        competition_id: competitionId,
+        round_id: finalRound.id,
+        name,
+        performance_order: null,
+        display_label: `最終${String.fromCharCode(65 + count)}`,
+      };
+      demoPerformers.push(newPerf);
+      await sb.from('performers').insert(newPerf);
+      await syncAfterMutation('performers');
+      return newPerf;
+    }
+
+    // localStorage fallback: check in-memory cache
     const existing = demoPerformers.find(
       (p) => p.round_id === finalRound.id && p.name === name
     );
@@ -422,13 +458,7 @@ export const demoDb = {
       display_label: `最終${String.fromCharCode(65 + count)}`,
     };
     demoPerformers.push(newPerf);
-
-    const sb = getSupabase();
-    if (sb) {
-      sb.from('performers').insert(newPerf).then(() => syncAfterMutation('performers'));
-    } else {
-      notify('performers');
-    }
+    notify('performers');
     return newPerf;
   },
 

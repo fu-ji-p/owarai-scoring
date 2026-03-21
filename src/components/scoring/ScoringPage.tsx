@@ -78,9 +78,17 @@ export default function ScoringPage() {
   }, [performers, finalRound]);
 
   // My final round performers (only those I picked and scored/will score)
+  // Deduplicate by name as a safety net in case duplicate records exist in DB
   const myFinalPerformers = useMemo(() => {
     if (finalistNames.length === 0) return [];
-    return finalRoundPerformers.filter((p) => finalistNames.includes(p.name));
+    const seen = new Set<string>();
+    return finalRoundPerformers.filter((p) => {
+      if (finalistNames.includes(p.name) && !seen.has(p.name)) {
+        seen.add(p.name);
+        return true;
+      }
+      return false;
+    });
   }, [finalRoundPerformers, finalistNames]);
 
   // Count scored in each round
@@ -127,18 +135,19 @@ export default function ScoringPage() {
     setTimeout(() => setSelectedPerformerId(null), 600);
   };
 
-  const handleConfirmFinalists = () => {
+  const handleConfirmFinalists = async () => {
     if (!competitionId || selectedFinalists.size === 0) return;
     // Get the names of selected 1st round performers
+    // Use sequential await to avoid race conditions (multiple inserts at once)
     const names: string[] = [];
-    selectedFinalists.forEach((perfId) => {
+    for (const perfId of selectedFinalists) {
       const perf = firstRoundPerformers.find((p) => p.id === perfId);
       if (perf) {
-        // Ensure the performer exists in the final round
-        demoDb.ensureFinalRoundPerformer(competitionId, perf.name);
+        // Ensure the performer exists in the final round (checks DB before inserting)
+        await demoDb.ensureFinalRoundPerformer(competitionId, perf.name);
         names.push(perf.name);
       }
-    });
+    }
     setFinalistNames(names);
     setRefreshKey((k) => k + 1);
   };
